@@ -21,3 +21,4 @@ curl=disponible
 data_dir=data/          creado por el mastercode
 db_path=data/zion.db    ignorado por git
 audit_utc=2026-10-21T15:02:19Z
+pytest=9.1.1 (installed 2026-10-21 for Phase 02 test runner)
