@@ -1,0 +1,25 @@
+# --- secretos: nunca al repositorio ---
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# --- datos generados ---
+*.db
+*.sqlite
+*.sqlite3
+data/raw/*
+!data/raw/.gitkeep
+reports/*.log
+logs/
+
+# --- runtime ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# --- sistema ---
+.DS_Store
+Thumbs.db

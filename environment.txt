@@ -1,0 +1,23 @@
+# ZION Trading Intelligence - manifiesto de entorno verificado
+# Generado por phase01_mastercode.sh - no editar a mano.
+
+os=Windows11/MINGW64_NT-10.0-26200
+shell=GNU bash 5.2.37(1)-release
+repo=/e/SAION/ZION-TRADING-INTELLIGENCE
+filesystem=E: (sin registros de propietario -> safe.directory requerido)
+
+python=3.12.10
+python_invocation=py -3.12
+sqlite_module=3.49.1
+sqlite_cli=NO INSTALADO (usar tools/db_list.py o el modulo python)
+git=2.49.0.windows.1
+node=24.20.0
+npm=11.19.0
+dotnet=10.0.402
+ollama=instalado (probe solo con ZION_AUDIT_PROBE_OLLAMA=1)
+jq=NO INSTALADO (usar python -c)
+curl=disponible
+
+data_dir=data/          creado por el mastercode
+db_path=data/zion.db    ignorado por git
+audit_utc=2026-10-21T15:02:19Z
