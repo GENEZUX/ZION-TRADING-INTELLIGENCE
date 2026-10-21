@@ -1,8 +1,8 @@
 # ZION Trading Intelligence - Especificacion Tecnica
 
-**Version:** 1.1 - Fase 01  
-**Fecha:** 2026-10-21  
-**Estado:** aprobada para construccion  
+**Version:** 1.2 - Fase 01
+**Fecha:** 2026-10-21
+**Estado:** aprobada por el usuario el 2026-10-21
 **Ambito:** local-first, sin servicios externos obligatorios
 
 ---
@@ -231,3 +231,19 @@ cumplidos y registrados en `audit_log`.
 
 *Este documento es el contrato. Si el codigo y este documento discrepan, el  
 documento manda hasta que se decida lo contrario por escrito.*
+
+---
+
+## 12. Bootstrap exception (added v1.2)
+
+`phase01_mastercode.sh` is a one-time bootstrap artifact retained for
+auditability. It is not part of the project runtime and must not be executed
+again in Phase 02 or later. Its actions are represented by the commit history
+(`d939ad9`) and by `docs/history-rewrite-2026-10-21.md`.
+
+## 13. History rewrite note (added v1.2)
+
+On 2026-10-21 the repository's history was rewritten twice via
+`git checkout --orphan`. The original three-commit history remains recoverable
+via `git reflog` for approximately 90 days. See
+`docs/history-rewrite-2026-10-21.md` for details.

@@ -1,56 +1,47 @@
-#!/usr/bin/env python3
-"""Inspector read-only de la base SQLite de ZION Trading Intelligence.
+"""List tables in the ZION SQLite database.
 
-Uso:
-    py -3.12 tools/db_list.py [ruta/a/la/base.db]
+Usage (from the repo root):
 
-No crea, no modifica, no borra. Si la base no existe, lo informa y sale con 0.
+    py -3.12 tools/db_list.py
+
+Does not create the database. If it is missing, prints a clear message
+pointing at the init script. No network. No credentials.
 """
-import os
+
+from __future__ import annotations
+
 import sqlite3
 import sys
+from pathlib import Path
 
-DEFAULT_DB = os.path.join("data", "zion.db")
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DB_PATH = REPO_ROOT / "data" / "zion.db"
 
 
 def main() -> int:
-    db_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_DB
-    db_path = os.path.abspath(db_path)
-
-    print(f"base   : {db_path}")
-    print(f"sqlite : {sqlite3.sqlite_version}")
-
-    if not os.path.exists(db_path):
-        print("estado : NO EXISTE todavia (se crea en la Fase 02)")
-        return 0
-
-    uri = "file:" + db_path.replace(os.sep, "/") + "?mode=ro"
-    try:
-        con = sqlite3.connect(uri, uri=True)
-    except sqlite3.Error as exc:
-        print(f"estado : no se pudo abrir en modo lectura ({exc})")
+    if not DB_PATH.is_file():
+        print(f"No database yet: {DB_PATH}")
+        print("Initialize it with:")
+        print("    py -3.12 -m src.store.init")
         return 1
 
+    conn = sqlite3.connect(str(DB_PATH))
     try:
-        tablas = con.execute(
-            "select name from sqlite_master where type='table' "
-            "and name not like 'sqlite_%' order by name"
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
         ).fetchall()
-
-        if not tablas:
-            print("estado : base vacia, sin tablas")
-            return 0
-
-        print(f"estado : {len(tablas)} tabla(s)")
-        print()
-        print(f"{'tabla':<20} {'filas':>8}")
-        print("-" * 30)
-        for (nombre,) in tablas:
-            filas = con.execute(f'select count(*) from "{nombre}"').fetchone()[0]
-            print(f"{nombre:<20} {filas:>8}")
     finally:
-        con.close()
+        conn.close()
 
+    if not rows:
+        print("Database exists but contains no tables.")
+        print("Initialize it with:")
+        print("    py -3.12 -m src.store.init")
+        return 1
+
+    print(f"Tables in {DB_PATH}:")
+    for (name,) in rows:
+        print(f"  {name}")
     return 0
 
 
