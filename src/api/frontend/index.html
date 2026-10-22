@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>ZION Trading Intelligence - Panel de Control</title>
+    <style>
+        body { background: #0d1117; color: #c9d1d9; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; padding: 40px; margin: 0; }
+        .container { max-width: 1000px; margin: 0 auto; }
+        header { border-bottom: 1px solid #30363d; padding-bottom: 20px; margin-bottom: 30px; display: flex; justify-content: space-between; align-items: center; }
+        h1 { color: #e6b800; margin: 0; font-size: 28px; }
+        .subtitle { color: #8b949e; font-size: 14px; }
+        .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 30px; }
+        .card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 20px; text-align: center; }
+        .card h3 { margin: 0 0 10px 0; color: #8b949e; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; }
+        .card .num { font-size: 36px; font-weight: bold; color: #58a6ff; }
+        .section-title { color: #e6b800; font-size: 20px; margin-bottom: 15px; border-bottom: 1px solid #30363d; padding-bottom: 5px; }
+        table { width: 100%; border-collapse: collapse; margin-bottom: 30px; }
+        th, td { text-align: left; padding: 12px; border-bottom: 1px solid #30363d; }
+        th { color: #8b949e; font-size: 13px; text-transform: uppercase; }
+        .green { color: #3fb950; }
+        .red { color: #f85149; }
+        .status { text-align: center; margin-top: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <h1>ZION Trading Intelligence</h1>
+                <div class="subtitle">Panel de Control Real · Datos de SQLite</div>
+            </div>
+            <div id="status" class="status">Conectando...</div>
+        </header>
+
+        <div class="grid">
+            <div class="card"><h3>Velas Reportadas</h3><div class="num" id="velas">-</div></div>
+            <div class="card"><h3>Procesos (Runs)</h3><div class="num" id="runs">-</div></div>
+            <div class="card"><h3>En Cuarentena</h3><div class="num" id="cuarentena">-</div></div>
+        </div>
+
+        <div class="section-title">🧪 Motor de Riesgo (VaR & Volatilidad)</div>
+        <table id="tabla-riesgo">
+            <thead><tr><th>Activo</th><th>Volatilidad Diaria</th><th>VaR 95% (1 Día)</th><th>Datos</th></tr></thead>
+            <tbody></tbody>
+        </table>
+
+        <div class="section-title">🔗 Matriz de Correlación</div>
+        <table id="tabla-correlacion">
+            <thead><tr><th>Par de Activos</th><th>Correlación</th></tr></thead>
+            <tbody></tbody>
+        </table>
+    </div>
+
+    <script>
+        async function cargarTodo() {
+            try {
+                const res = await fetch('http://127.0.0.1:8000/api/metricas');
+                if (!res.ok) throw new Error("Servidor no responde");
+                const data = await res.json();
+
+                // 1. Conteos
+                document.getElementById('velas').innerText = data.total_velas;
+                document.getElementById('runs').innerText = data.total_runs;
+                document.getElementById('cuarentena').innerText = data.total_cuarentena;
+                document.getElementById('status').innerText = "✅ Conectado";
+                document.getElementById('status').className = "status green";
+
+                // 2. Tabla de Riesgo
+                const tbodyRiesgo = document.querySelector('#tabla-riesgo tbody');
+                tbodyRiesgo.innerHTML = '';
+                if (data.riesgo && data.riesgo.metricas) {
+                    for (const [activo, metricas] of Object.entries(data.riesgo.metricas)) {
+                        const row = `<tr>
+                            <td>${activo}</td>
+                            <td class="${metricas.volatilidad_diaria > 2 ? 'red' : 'green'}">${metricas.volatilidad_diaria}%</td>
+                            <td class="red">${metricas.var_95}%</td>
+                            <td>${metricas.datos}</td>
+                        </tr>`;
+                        tbodyRiesgo.innerHTML += row;
+                    }
+                }
+
+                // 3. Tabla de Correlación
+                const tbodyCorr = document.querySelector('#tabla-correlacion tbody');
+                tbodyCorr.innerHTML = '';
+                if (data.riesgo && data.riesgo.correlaciones) {
+                    for (const [par, corr] of Object.entries(data.riesgo.correlaciones)) {
+                        const color = corr > 0.5 ? 'red' : 'green';
+                        const row = `<tr>
+                            <td>${par}</td>
+                            <td class="${color}">${corr}</td>
+                        </tr>`;
+                        tbodyCorr.innerHTML += row;
+                    }
+                }
+
+            } catch (e) {
+                document.getElementById('status').innerText = "❌ Error de conexión";
+                document.getElementById('status').className = "status red";
+                console.error(e);
+            }
+        }
+        cargarTodo();
+    </script>
+</body>
+</html>
