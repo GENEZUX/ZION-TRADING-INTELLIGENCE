@@ -1,49 +1,47 @@
 #!/usr/bin/env bash
 # =============================================================================
-#  ZION PUMP RADAR v1 - MASTERCODE
-#  Radar de pumps, squeezes y trampas sobre los perpetuos de ZION.
+#  ZION PUMP RADAR v1 — BASH PURO (sin Python)
+#
+#  Un solo awk clasifica, ordena y emite las tablas HTML. Bash solo envuelve.
+#  Motivo: en Git Bash cada arranque de awk cuesta ~0.5s; con 75 llamadas el
+#  script tardaba mas de un minuto. Con una sola pasada tarda menos de 2s.
 #
 #  Uso:
-#    bash ZION_PUMP_RADAR_MASTER_v1.sh serve    # pruebas + build + servidor
-#    bash ZION_PUMP_RADAR_MASTER_v1.sh build    # solo genera el HTML
-#    bash ZION_PUMP_RADAR_MASTER_v1.sh scan     # corre el escaneo de funding
-#    bash ZION_PUMP_RADAR_MASTER_v1.sh test     # solo pruebas
+#    bash ZION_PUMP_RADAR_MASTER_v1.sh serve    # abre y mantiene vivo
+#    bash ZION_PUMP_RADAR_MASTER_v1.sh build    # genera el HTML una vez
+#    bash ZION_PUMP_RADAR_MASTER_v1.sh watch    # regenera en bucle, sin abrir
+#    bash ZION_PUMP_RADAR_MASTER_v1.sh test     # verifica el entorno
 #    bash ZION_PUMP_RADAR_MASTER_v1.sh help
 #
-#  Variables: ZION_REPO (default /e/SAION/ZION-TRADING-INTELLIGENCE)
-#             PORT      (default 8777)
+#  Variables:
+#    ZION_REPO   default /e/SAION/ZION-TRADING-INTELLIGENCE
+#    INTERVAL    segundos entre regeneraciones (default 30)
 # =============================================================================
 
-set -uo pipefail
+set -o pipefail
 
 REPO="${ZION_REPO:-/e/SAION/ZION-TRADING-INTELLIGENCE}"
-PORT="${PORT:-8777}"
-RENDERER="$REPO/data/.pump_radar_render.py"
-OUT_HTML="$REPO/data/pump_radar.html"
+INTERVAL="${INTERVAL:-30}"
+OUT="$REPO/data/pump_radar.html"
+TMPD="$REPO/data/.radar_tmp"
+
+MIN_LIQ=1000000
+MAX_FUNDING=500
+TRAP_RATIO=8
+SQUEEZE_APR=-50
+EUPHORIA_APR=30
 
 c_gold=$'\033[33m'; c_red=$'\033[31m'; c_grn=$'\033[32m'
 c_dim=$'\033[90m';  c_rst=$'\033[0m'; c_bld=$'\033[1m'
 
-say()  { printf '%s\n' "$*"; }
 ok()   { printf '%s[OK]%s %s\n' "$c_grn" "$c_rst" "$*"; }
 warn() { printf '%s[!]%s %s\n' "$c_gold" "$c_rst" "$*"; }
 die()  { printf '%s[ERROR]%s %s\n' "$c_red" "$c_rst" "$*" >&2; exit 1; }
 
 banner() {
-    say ""
-    say "${c_gold}=======================================================${c_rst}"
-    say "${c_gold}  ZION PUMP RADAR v1${c_rst}"
-    say "${c_gold}=======================================================${c_rst}"
-    say ""
-}
-
-find_python() {
-    if command -v python >/dev/null 2>&1; then echo "python"; return 0; fi
-    if command -v python3 >/dev/null 2>&1; then echo "python3"; return 0; fi
-    if [ -x "/c/Users/User/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe" ]; then
-        echo "/c/Users/User/.workbuddy-ai/binaries/python/versions/3.13.12/python.exe"; return 0
-    fi
-    return 1
+    printf '\n%s=======================================================%s\n' "$c_gold" "$c_rst"
+    printf '%s  ZION PUMP RADAR v1 — bash puro%s\n' "$c_gold" "$c_rst"
+    printf '%s=======================================================%s\n\n' "$c_gold" "$c_rst"
 }
 
 latest_snapshot() {
@@ -51,82 +49,217 @@ latest_snapshot() {
 }
 
 # ---------------------------------------------------------------------------
-# Renderer embebido: se escribe una vez y se reutiliza en build y serve.
+# El motor: un unico awk. Emite las tablas HTML por stdout y los contadores
+# en un fichero aparte.
 # ---------------------------------------------------------------------------
-write_renderer() {
-    mkdir -p "$REPO/data" || die "no puedo crear $REPO/data"
-    cat > "$RENDERER" <<'PYEOF'
-import json, sys, os, glob
-from datetime import datetime, timezone
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+write_awk() {
+    cat > "$TMPD/render.awk" <<'AWKEOF'
+function gs(line, key,   re, m) {
+    re = "\"" key "\": \"[^\"]*\""
+    if (match(line, re)) {
+        m = substr(line, RSTART, RLENGTH)
+        sub("\"" key "\": \"", "", m)
+        sub("\"$", "", m)
+        return m
+    }
+    return ""
+}
+function gn(line, key,   re, m) {
+    re = "\"" key "\": -?[0-9][0-9.eE+-]*"
+    if (match(line, re)) {
+        m = substr(line, RSTART, RLENGTH)
+        sub("\"" key "\": ", "", m)
+        return m + 0
+    }
+    return 0
+}
+function money(v) {
+    v = v + 0
+    if (v >= 1e9) return sprintf("$%.2fB", v / 1e9)
+    if (v >= 1e6) return sprintf("$%.1fM", v / 1e6)
+    if (v >= 1e3) return sprintf("$%.0fK", v / 1e3)
+    return sprintf("$%.0f", v)
+}
+function pct2(v) { return sprintf("%+.2f%%", v) }
+function pct1(v) { return sprintf("%+.1f%%", v) }
 
-REPO = os.environ.get("ZION_REPO", "/e/SAION/ZION-TRADING-INTELLIGENCE")
-OUT = os.path.join(REPO, "data", "pump_radar.html")
+BEGIN {
+    MINL = ENVIRON["R_MIN"] + 0
+    MAXF = ENVIRON["R_MAXF"] + 0
+    TRAP = ENVIRON["R_TRAP"] + 0
+    SQAPR = ENVIRON["R_SQAPR"] + 0
+    EUAPR = ENVIRON["R_EUAPR"] + 0
+    COUNTS = ENVIRON["R_COUNTS"]
+    total = 0; nv = 0; nq = 0; ne = 0; nt = 0; nb = 0
+}
 
-MAX_OI = 1_000_000.0
-MAX_VOL = 1_000_000.0
-MAX_FUNDING = 500.0
-VOL_OI_TRAP = 8.0
-SQUEEZE = -50.0
-EUPHORIA = 30.0
+/"symbol"/ {
+    s = gs($0, "symbol"); if (s == "") next
+    c = gn($0, "change_24h_pct")
+    a = gn($0, "funding_apr")
+    p = gn($0, "mark_price")
+    o = gn($0, "open_interest_usd")
+    v = gn($0, "volume_24h_usd")
+    total++
 
+    if (o < MINL || v < MINL) {
+        nb++; bsym[nb] = s; bmot[nb] = "iliquido"
+        bc[nb] = c; ba[nb] = a; bo[nb] = o; bv[nb] = v
+        next
+    }
+    if ((a < 0 ? -a : a) > MAXF) {
+        nb++; bsym[nb] = s; bmot[nb] = "funding no fiable"
+        bc[nb] = c; ba[nb] = a; bo[nb] = o; bv[nb] = v
+    }
 
-def latest_snapshot():
-    files = sorted(glob.glob(os.path.join(REPO, "data", "perp_snapshot_*.json")),
-                   key=os.path.getmtime, reverse=True)
-    return files[0] if files else None
+    r = (o > 0 ? v / o : 0)
+    nv++
+    vsym[nv] = s; vc[nv] = c; va[nv] = a; vp[nv] = p
+    vo[nv] = o; vv[nv] = v; vr[nv] = r
 
+    if (r > TRAP) { nt++; tsym[nt] = s; tc[nt] = c; trr[nt] = r; to[nt] = o }
+    if (a <= SQAPR && c > 0) { nq++; qsym[nq] = s; qc[nq] = c; qa[nq] = a; qo[nq] = o }
+    if (a >= EUAPR && r > 3) { ne++; esym[ne] = s; ea[ne] = a; er[ne] = r; eo[ne] = o }
+}
 
-def load():
-    path = latest_snapshot()
-    if not path:
-        raise SystemExit("sin snapshot en data/perp_snapshot_*.json")
-    raw = json.load(open(path, encoding="utf-8"))
-    return raw.get("captured_at_utc", "?"), raw.get("perps", [])
+END {
+    printf "%d %d %d %d %d\n", total, nv, nq, nb, nt > COUNTS
+    close(COUNTS)
 
+    mx = 0.0001
+    for (i = 1; i <= nv; i++) { x = (vc[i] < 0 ? -vc[i] : vc[i]); if (x > mx) mx = x }
 
-def compute(captured, perps):
-    valid, blocked, traps = [], [], []
-    for p in perps:
-        oi = float(p.get("open_interest_usd", 0) or 0)
-        vol = float(p.get("volume_24h_usd", 0) or 0)
-        apr = float(p.get("funding_apr", 0) or 0)
-        if oi < MAX_OI or vol < MAX_VOL:
-            blocked.append((p, "iliquido"))
-            continue
-        if abs(apr) > MAX_FUNDING:
-            blocked.append((p, "funding_no_fiable"))
-        ratio = vol / oi if oi > 0 else 0
-        if ratio > VOL_OI_TRAP:
-            traps.append((p, ratio))
-        valid.append(p)
+    for (i = 1; i <= nv; i++) idx[i] = i
+    for (i = 1; i < nv; i++)
+        for (j = i + 1; j <= nv; j++)
+            if (vc[idx[j]] > vc[idx[i]]) { t = idx[i]; idx[i] = idx[j]; idx[j] = t }
 
-    def ch(p):
-        return float(p.get("change_24h_pct", 0) or 0)
+    print "<h2>Top pumps 24h</h2>"
+    if (nv == 0) {
+        print "<p class=\"empty\">sin datos</p>"
+    } else {
+        print "<table><thead><tr><th>Activo</th><th>24h</th><th></th><th>Precio</th><th>Funding TAE</th><th>OI</th><th>Vol 24h</th></tr></thead><tbody>"
+        lim = (nv < 15 ? nv : 15)
+        for (k = 1; k <= lim; k++) {
+            i = idx[k]
+            w = int(((vc[i] < 0 ? -vc[i] : vc[i]) / mx) * 100)
+            if (w < 3) w = 3
+            cls = (vc[i] >= 0 ? "up" : "down")
+            tcls = (vc[i] >= 0 ? "" : " blue")
+            if (va[i] < 0) { acls = "neg"; tag = " <span class=\"tag\">shorts pagan</span>" }
+            else { acls = ""; tag = "" }
+            printf "<tr><td class=\"tk\">%s</td><td class=\"%s\">%s</td><td><div class=\"bar%s\" style=\"width:%d%%\"></div></td><td>%s</td><td class=\"%s\">%s%s</td><td>%s</td><td>%s</td></tr>\n", \
+                vsym[i], cls, pct1(vc[i]), tcls, w, vp[i], acls, pct2(va[i]), tag, money(vo[i]), money(vv[i])
+        }
+        print "</tbody></table>"
+    }
 
-    pumps = sorted(valid, key=ch, reverse=True)[:15]
-    squeezes = [p for p in valid if float(p.get("funding_apr", 0) or 0) <= SQUEEZE and ch(p) > 0]
-    squeezes.sort(key=lambda p: abs(float(p.get("funding_apr", 0) or 0)), reverse=True)
-    euphorias = [p for p in valid
-                 if float(p.get("funding_apr", 0) or 0) >= EUPHORIA
-                 and float(p.get("open_interest_usd", 1) or 1) > 0
-                 and float(p.get("volume_24h_usd", 0) or 0) / float(p.get("open_interest_usd", 1) or 1) > 3]
-    euphorias.sort(key=lambda p: float(p.get("funding_apr", 0) or 0), reverse=True)
-    traps.sort(key=lambda t: t[1], reverse=True)
-    return dict(captured=captured, total=len(perps), valid=len(valid),
-                blocked=blocked, pumps=pumps, squeezes=squeezes,
-                euphorias=euphorias, traps=traps)
+    for (i = 1; i <= nq; i++) qi[i] = i
+    for (i = 1; i < nq; i++)
+        for (j = i + 1; j <= nq; j++)
+            if ((qa[qi[j]] < 0 ? -qa[qi[j]] : qa[qi[j]]) > (qa[qi[i]] < 0 ? -qa[qi[i]] : qa[qi[i]])) {
+                t = qi[i]; qi[i] = qi[j]; qi[j] = t
+            }
 
+    print "\n<h2>Squeeze de shorts</h2>"
+    if (nq == 0) {
+        print "<p class=\"empty\">sin squeezes activos</p>"
+    } else {
+        print "<table><thead><tr><th>Activo</th><th>24h</th><th>Funding TAE</th><th>OI</th><th>Lectura</th></tr></thead><tbody>"
+        for (k = 1; k <= nq; k++) {
+            i = qi[k]
+            nota = (qc[i] > 15 ? "squeeze en curso" : "presion acumulada")
+            printf "<tr><td class=\"tk\">%s</td><td class=\"up\">%s</td><td class=\"neg\">%s</td><td>%s</td><td>%s</td></tr>\n", \
+                qsym[i], pct1(qc[i]), pct2(qa[i]), money(qo[i]), nota
+        }
+        print "</tbody></table>"
+    }
 
-def fmt_money(v):
-    v = float(v or 0)
-    if v >= 1e9: return f"${v/1e9:.2f}B"
-    if v >= 1e6: return f"${v/1e6:.1f}M"
-    if v >= 1e3: return f"${v/1e3:.0f}K"
-    return f"${v:.0f}"
+    for (i = 1; i <= ne; i++) ei[i] = i
+    for (i = 1; i < ne; i++)
+        for (j = i + 1; j <= ne; j++)
+            if (ea[ei[j]] > ea[ei[i]]) { t = ei[i]; ei[i] = ei[j]; ei[j] = t }
 
+    print "\n<h2>Euforia de longs</h2>"
+    if (ne == 0) {
+        print "<p class=\"empty\">sin euforia relevante</p>"
+    } else {
+        print "<table><thead><tr><th>Activo</th><th>Funding TAE</th><th>vol/OI</th><th>OI</th><th>Lectura</th></tr></thead><tbody>"
+        for (k = 1; k <= ne; k++) {
+            i = ei[k]
+            printf "<tr><td class=\"tk\">%s</td><td class=\"up\">%s</td><td>%.1fx</td><td>%s</td><td>longs sobrecargados</td></tr>\n", \
+                esym[i], pct2(ea[i]), er[i], money(eo[i])
+        }
+        print "</tbody></table>"
+    }
 
-CSS = """
+    for (i = 1; i <= nt; i++) ti[i] = i
+    for (i = 1; i < nt; i++)
+        for (j = i + 1; j <= nt; j++)
+            if (trr[ti[j]] > trr[ti[i]]) { t = ti[i]; ti[i] = ti[j]; ti[j] = t }
+
+    print "\n<h2>Trampas de rotacion</h2>"
+    if (nt == 0) {
+        print "<p class=\"empty\">sin rotacion anomala</p>"
+    } else {
+        print "<table><thead><tr><th>Activo</th><th>24h</th><th>vol/OI</th><th>OI</th><th>Lectura</th></tr></thead><tbody>"
+        for (k = 1; k <= nt; k++) {
+            i = ti[k]
+            printf "<tr><td class=\"tk\">%s</td><td class=\"up\">%s</td><td class=\"up\">%.1fx</td><td>%s</td><td>sin conviccion posicional &mdash; no entrar</td></tr>\n", \
+                tsym[i], pct1(tc[i]), trr[i], money(to[i])
+        }
+        print "</tbody></table>"
+    }
+
+    print "\n<h2>Riesgos bloqueados</h2>"
+    if (nb == 0) {
+        print "<p class=\"empty\">nada bloqueado</p>"
+    } else {
+        print "<table><thead><tr><th>Activo</th><th>Motivo</th><th>24h</th><th>Funding TAE</th><th>OI</th><th>Vol 24h</th></tr></thead><tbody>"
+        for (k = 1; k <= nb; k++) {
+            printf "<tr><td class=\"tk\">%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>\n", \
+                bsym[k], bmot[k], pct1(bc[k]), pct2(ba[k]), money(bo[k]), money(bv[k])
+        }
+        print "</tbody></table>"
+    }
+}
+AWKEOF
+}
+
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+build() {
+    local quiet="${1:-}"
+    [ -d "$REPO" ] || die "repositorio no encontrado: $REPO"
+    local snap; snap="$(latest_snapshot)"
+    [ -n "$snap" ] || die "no hay data/perp_snapshot_*.json en $REPO"
+
+    mkdir -p "$TMPD" || die "no puedo crear $TMPD"
+    write_awk
+
+    local captured total valid nsq nblk ntr now
+    captured=$(sed -n 's/.*"captured_at_utc": "\([^"]*\)".*/\1/p' "$snap" | head -1)
+    [ -n "$captured" ] || captured="desconocido"
+    now=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+    # ---- UNA sola pasada de awk: clasifica, ordena y emite las tablas ----
+    R_MIN="$MIN_LIQ" R_MAXF="$MAX_FUNDING" R_TRAP="$TRAP_RATIO" \
+    R_SQAPR="$SQUEEZE_APR" R_EUAPR="$EUPHORIA_APR" R_COUNTS="$TMPD/counts.txt" \
+    awk -f "$TMPD/render.awk" "$snap" > "$TMPD/tables.html" \
+        || die "fallo el motor awk"
+
+    read -r total valid nsq nblk ntr < "$TMPD/counts.txt" 2>/dev/null
+    total=${total:-0}; valid=${valid:-0}; nsq=${nsq:-0}; nblk=${nblk:-0}; ntr=${ntr:-0}
+
+    # ---- Envoltorio HTML ----
+    {
+    printf '%s\n' '<!DOCTYPE html>'
+    printf '%s\n' '<html lang="es"><head><meta charset="UTF-8">'
+    printf '%s\n' '<meta name="viewport" content="width=device-width,initial-scale=1">'
+    printf '<meta http-equiv="refresh" content="%s">\n' "$INTERVAL"
+    printf '%s\n' '<title>ZION Pump Radar</title><style>'
+    cat <<'CSSEOF'
 *{box-sizing:border-box}
 body{margin:0;background:#0d1117;color:#c9d1d9;font-family:'Segoe UI',system-ui,sans-serif;padding:28px}
 .wrap{max-width:1180px;margin:0 auto}
@@ -150,224 +283,98 @@ tr:hover td{background:#161b22}
 .tag{display:inline-block;background:#21262d;border:1px solid #30363d;border-radius:4px;padding:2px 7px;font-size:10px;color:#8b949e;margin-left:5px}
 .empty{color:#8b949e;font-style:italic;padding:10px 0;font-size:13px}
 .foot{text-align:center;color:#484f58;font-size:11px;margin-top:36px;letter-spacing:.5px}
-code{background:#161b22;padding:2px 6px;border-radius:4px;color:#e6b800;font-size:12px}
-"""
+CSSEOF
+    printf '%s\n' '</style></head><body><div class="wrap">'
+    printf '%s\n' '<h1>ZION Pump Radar</h1>'
+    printf '<p class="sub">Snapshot %s &middot; servido %s &middot; refresco %ss</p>\n' "$captured" "$now" "$INTERVAL"
+    printf '%s\n' '<div class="stats">'
+    printf '<div class="stat"><div class="k">Perpetuos</div><div class="v">%s</div></div>\n' "$total"
+    printf '<div class="stat"><div class="k">Aptos</div><div class="v">%s</div></div>\n' "$valid"
+    printf '<div class="stat"><div class="k">Squeezes</div><div class="v">%s</div></div>\n' "$nsq"
+    printf '<div class="stat"><div class="k">Bloqueados</div><div class="v">%s</div></div>\n' "$nblk"
+    printf '%s\n' '</div>'
+    cat "$TMPD/tables.html"
+    printf '\n%s\n' '<div class="foot">ZION Systems &middot; Pump Radar v1 &middot; bash puro</div>'
+    printf '%s\n' '</div></body></html>'
+    } > "$OUT"
 
-
-def rows_pumps(data):
-    if not data["pumps"]:
-        return '<p class="empty">sin datos</p>'
-    mx = max(abs(float(p.get("change_24h_pct", 0) or 0)) for p in data["pumps"]) or 1
-    h = ['<table><thead><tr><th>Activo</th><th>24h</th><th></th>'
-         '<th>Precio</th><th>Funding TAE</th><th>OI</th><th>Vol 24h</th></tr></thead><tbody>']
-    for p in data["pumps"]:
-        ch = float(p.get("change_24h_pct", 0) or 0)
-        apr = float(p.get("funding_apr", 0) or 0)
-        w = int(abs(ch) / mx * 100)
-        cls = "neg" if apr < 0 else ""
-        tag = '<span class="tag">shorts pagan</span>' if apr < 0 else ''
-        h.append(
-            f'<tr><td class="tk">{p.get("symbol")}</td>'
-            f'<td class="{"up" if ch >= 0 else "down"}">{ch:+.1f}%</td>'
-            f'<td><div class="bar{" blue" if ch < 0 else ""}" style="width:{w}%"></div></td>'
-            f'<td>{float(p.get("mark_price", 0) or 0):,.4g}</td>'
-            f'<td class="{cls}">{apr:+.2f}%{tag}</td>'
-            f'<td>{fmt_money(p.get("open_interest_usd"))}</td>'
-            f'<td>{fmt_money(p.get("volume_24h_usd"))}</td></tr>')
-    h.append("</tbody></table>")
-    return "".join(h)
-
-
-def rows_squeeze(data):
-    if not data["squeezes"]:
-        return '<p class="empty">sin squeezes activos</p>'
-    h = ['<table><thead><tr><th>Activo</th><th>24h</th><th>Funding TAE</th>'
-         '<th>OI</th><th>Lectura</th></tr></thead><tbody>']
-    for p in data["squeezes"]:
-        apr = float(p.get("funding_apr", 0) or 0)
-        ch = float(p.get("change_24h_pct", 0) or 0)
-        nota = "squeeze en curso" if ch > 15 else "presion acumulada"
-        h.append(f'<tr><td class="tk">{p.get("symbol")}</td>'
-                 f'<td class="up">{ch:+.1f}%</td>'
-                 f'<td class="neg">{apr:+.2f}%</td>'
-                 f'<td>{fmt_money(p.get("open_interest_usd"))}</td>'
-                 f'<td>{nota}</td></tr>')
-    h.append("</tbody></table>")
-    return "".join(h)
-
-
-def rows_traps(data):
-    if not data["traps"]:
-        return '<p class="empty">sin rotacion anomala</p>'
-    h = ['<table><thead><tr><th>Activo</th><th>24h</th><th>vol/OI</th>'
-         '<th>OI</th><th>Lectura</th></tr></thead><tbody>']
-    for p, ratio in data["traps"]:
-        h.append(f'<tr><td class="tk">{p.get("symbol")}</td>'
-                 f'<td class="up">{float(p.get("change_24h_pct",0) or 0):+.1f}%</td>'
-                 f'<td class="up">{ratio:.1f}x</td>'
-                 f'<td>{fmt_money(p.get("open_interest_usd"))}</td>'
-                 f'<td>sin conviccion posicional &mdash; no entrar</td></tr>')
-    h.append("</tbody></table>")
-    return "".join(h)
-
-
-def rows_blocked(data):
-    if not data["blocked"]:
-        return '<p class="empty">nada bloqueado</p>'
-    h = ['<table><thead><tr><th>Activo</th><th>Motivo</th><th>Funding TAE</th>'
-         '<th>OI</th><th>Vol 24h</th></tr></thead><tbody>']
-    for p, motivo in data["blocked"]:
-        h.append(f'<tr><td class="tk">{p.get("symbol")}</td>'
-                 f'<td>{motivo}</td>'
-                 f'<td>{float(p.get("funding_apr",0) or 0):+.2f}%</td>'
-                 f'<td>{fmt_money(p.get("open_interest_usd"))}</td>'
-                 f'<td>{fmt_money(p.get("volume_24h_usd"))}</td></tr>')
-    h.append("</tbody></table>")
-    return "".join(h)
-
-
-def render(data):
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    parts = [
-        "<!DOCTYPE html><html lang='es'><head><meta charset='UTF-8'>",
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>",
-        "<meta http-equiv='refresh' content='30'>",
-        "<title>ZION Pump Radar</title><style>", CSS, "</style></head><body><div class='wrap'>",
-        "<h1>ZION Pump Radar</h1>",
-        f"<p class='sub'>Snapshot {data['captured']} &middot; servido {now} &middot; refresco 30s</p>",
-        "<div class='stats'>",
-        f"<div class='stat'><div class='k'>Perpetuos</div><div class='v'>{data['total']}</div></div>",
-        f"<div class='stat'><div class='k'>Aptos</div><div class='v'>{data['valid']}</div></div>",
-        f"<div class='stat'><div class='k'>Squeezes</div><div class='v'>{len(data['squeezes'])}</div></div>",
-        f"<div class='stat'><div class='k'>Bloqueados</div><div class='v'>{len(data['blocked'])}</div></div>",
-        "</div>",
-        "<h2>Top pumps 24h</h2>", rows_pumps(data),
-        "<h2>Squeeze de shorts</h2>", rows_squeeze(data),
-        "<h2>Trampas de rotacion</h2>", rows_traps(data),
-        "<h2>Riesgos bloqueados</h2>", rows_blocked(data),
-        "<div class='foot'>ZION Systems &middot; Pump Radar v1 &middot; Generado por la Bestia</div>",
-        "</div></body></html>",
-    ]
-    return "".join(parts)
-
-
-def build():
-    captured, perps = load()
-    data = compute(captured, perps)
-    html = render(data)
-    os.makedirs(os.path.dirname(OUT), exist_ok=True)
-    open(OUT, "w", encoding="utf-8").write(html)
-    print(f"[OK] HTML generado: {OUT}")
-    print(f"     perpetuos={data['total']} aptos={data['valid']} "
-          f"squeezes={len(data['squeezes'])} trampas={len(data['traps'])} "
-          f"bloqueados={len(data['blocked'])}")
-    return 0
-
-
-def serve(port):
-    build()
-
-    class Handler(BaseHTTPRequestHandler):
-        def do_GET(self):
-            try:
-                captured, perps = load()
-                body = render(compute(captured, perps)).encode("utf-8")
-                code = 200
-            except Exception as exc:
-                body = f"<h1>Radar sin datos</h1><pre>{exc}</pre>".encode("utf-8")
-                code = 500
-            self.send_response(code)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            self.wfile.write(body)
-
-        def log_message(self, *a):
-            pass
-
-    srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    print("")
-    print(f"  Radar activo en  http://127.0.0.1:{port}")
-    print("  Ctrl+C para detener")
-    print("")
-    try:
-        srv.serve_forever()
-    except KeyboardInterrupt:
-        print("\n  Radar detenido.")
-        srv.server_close()
-    return 0
-
-
-if __name__ == "__main__":
-    args = sys.argv[1:]
-    if args and args[0] == "serve":
-        port = int(args[1]) if len(args) > 1 else 8777
-        sys.exit(serve(port))
-    sys.exit(build())
-PYEOF
-    ok "renderer listo en data/.pump_radar_render.py"
+    if [ -z "$quiet" ]; then
+        ok "HTML generado: data/pump_radar.html"
+        printf '     perpetuos=%s aptos=%s squeezes=%s trampas=%s bloqueados=%s\n' \
+            "$total" "$valid" "$nsq" "$ntr" "$nblk"
+    fi
 }
 
 # ---------------------------------------------------------------------------
 # Comandos
 # ---------------------------------------------------------------------------
 cmd_test() {
-    say "${c_bld}Pruebas${c_rst}"
+    printf '%s\n' "${c_bld}Pruebas${c_rst}"
     [ -d "$REPO" ] || die "repositorio no encontrado: $REPO"
     ok "repositorio accesible"
     [ -f "$REPO/data/zion.db" ] && ok "base zion.db presente" || warn "sin zion.db (no bloqueante)"
     local snap; snap="$(latest_snapshot)"
     [ -n "$snap" ] && ok "snapshot: $(basename "$snap")" || die "no hay data/perp_snapshot_*.json"
-    local py; py="$(find_python)" || die "python no encontrado en PATH"
-    ok "python: $py"
-    "$py" -c "import json,sys; d=json.load(open(sys.argv[1],encoding='utf-8')); print('   perps en snapshot:', len(d.get('perps',[])))" "$snap"
+    ok "perpetuos en snapshot: $(grep -c '"symbol"' "$snap")"
+    local t
+    for t in awk sed sort grep date; do
+        command -v "$t" >/dev/null 2>&1 && ok "herramienta: $t" || die "falta $t"
+    done
 }
 
-cmd_build() {
-    say "${c_bld}Build${c_rst}"
-    write_renderer
-    local py; py="$(find_python)" || die "python no encontrado"
-    ZION_REPO="$REPO" "$py" "$RENDERER" || die "fallo al renderizar"
-    ok "HTML en data/pump_radar.html"
-}
-
-cmd_scan() {
-    say "${c_bld}Escaneo de funding${c_rst}"
-    local py; py="$(find_python)" || die "python no encontrado"
-    ( cd "$REPO" && "$py" run_funding_scan.py ) || die "fallo el escaneo"
+open_browser() {
+    local w
+    w=$(cygpath -w "$OUT" 2>/dev/null || printf '%s' "$OUT")
+    cmd.exe /c start "" "$w" >/dev/null 2>&1 || warn "abre manualmente: $w"
 }
 
 cmd_serve() {
-    say "${c_bld}Servidor${c_rst}"
-    write_renderer
-    local py; py="$(find_python)" || die "python no encontrado"
-    ZION_REPO="$REPO" "$py" "$RENDERER" serve "$PORT" || die "el servidor termino con error"
+    build
+    open_browser
+    printf '\n  Radar activo. Refresco cada %ss.\n' "$INTERVAL"
+    printf '  Archivo: %s\n' "$OUT"
+    printf '  Ctrl+C para detener.\n\n'
+    while true; do
+        sleep "$INTERVAL"
+        build quiet || warn "fallo al regenerar; reintentando"
+        printf '%s  [%s] regenerado%s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst"
+    done
+}
+
+cmd_watch() {
+    build
+    printf '  Vigilando. Refresco cada %ss. Ctrl+C para detener.\n\n' "$INTERVAL"
+    while true; do
+        sleep "$INTERVAL"
+        build quiet || warn "fallo al regenerar"
+        printf '%s  [%s] regenerado%s\n' "$c_dim" "$(date '+%H:%M:%S')" "$c_rst"
+    done
 }
 
 cmd_help() {
     cat <<EOF
-ZION PUMP RADAR v1 - MasterCode
+ZION PUMP RADAR v1 — bash puro (sin Python)
 
-  bash $(basename "$0") serve    pruebas + build + servidor local
+  bash $(basename "$0") serve    genera, abre el navegador y mantiene vivo
   bash $(basename "$0") build    solo genera el HTML
-  bash $(basename "$0") scan     corre el escaneo de funding
-  bash $(basename "$0") test     solo pruebas de entorno
+  bash $(basename "$0") watch    regenera en bucle, sin abrir navegador
+  bash $(basename "$0") test     verifica el entorno
 
 Variables:
   ZION_REPO   ruta del repo (default /e/SAION/ZION-TRADING-INTELLIGENCE)
-  PORT        puerto del radar (default 8777)
+  INTERVAL    segundos entre refrescos (default 30)
 
 Ejemplo:
-  PORT=9000 bash $(basename "$0") serve
+  INTERVAL=10 bash $(basename "$0") serve
 EOF
 }
 
 banner
 case "${1:-help}" in
-    serve)  cmd_test; say ""; cmd_serve ;;
-    build)  cmd_build ;;
-    scan)   cmd_scan ;;
+    serve)  cmd_test; printf '\n'; cmd_serve ;;
+    build)  build ;;
+    watch)  cmd_test; printf '\n'; cmd_watch ;;
     test)   cmd_test ;;
     help|-h|--help) cmd_help ;;
-    *) warn "comando desconocido: $1"; say ""; cmd_help; exit 1 ;;
+    *) warn "comando desconocido: $1"; printf '\n'; cmd_help; exit 1 ;;
 esac

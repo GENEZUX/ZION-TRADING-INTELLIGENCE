@@ -26,3 +26,10 @@ Thumbs.db
 ZProMax_cartera.csv
 *.pyc
 __pycache__/
+
+# --- radar generado ---
+data/.radar_tmp/
+data/pump_radar.html
+
+# --- memoria del agente ---
+.workbuddy-ai/
