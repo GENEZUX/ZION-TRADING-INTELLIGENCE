@@ -325,7 +325,14 @@ cmd_test() {
 open_browser() {
     local w
     w=$(cygpath -w "$OUT" 2>/dev/null || printf '%s' "$OUT")
-    cmd.exe /c start "" "$w" >/dev/null 2>&1 || warn "abre manualmente: $w"
+    # OJO: en Git Bash, "cmd.exe /c start" a veces NO retorna nunca y congela
+    # el script. Se lanza en segundo plano y con timeout: nunca puede bloquear.
+    (
+        timeout 6 cmd.exe /c start "" "$w" >/dev/null 2>&1 \
+            || timeout 6 explorer.exe "$w" >/dev/null 2>&1
+    ) >/dev/null 2>&1 &
+    printf '  Navegador: %s\n' "$w"
+    printf '  (si no se abrio solo, abre esa ruta a mano)\n'
 }
 
 cmd_serve() {
@@ -366,6 +373,10 @@ Variables:
 
 Ejemplo:
   INTERVAL=10 bash $(basename "$0") serve
+
+IMPORTANTE: ejecuta el archivo, NO pegues su contenido en la terminal.
+  Correcto:   bash /c/Users/User/Downloads/$(basename "$0") serve
+  Incorrecto: copiar y pegar todo el codigo dentro de la terminal
 EOF
 }
 
