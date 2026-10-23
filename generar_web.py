@@ -84,7 +84,7 @@ def _bloque_funding(titulo, senales, vacio="(sin senales)"):
     html += ('<table><thead><tr><th>Activo</th><th>Edge / Intensidad</th>'
              '<th>Score</th><th>Detalle</th></tr></thead><tbody>')
     for s in senales:
-        flags = "".join(f'<span class="flag">{f}</span>' for f in s["flags"])
+        flags = "".join(f' <span class="flag">{f}</span>' for f in s["flags"])
         valor = f"{s['edge_apr']:+.2f}% TAE" if s["kind"] == "arbitrage" else f"{s['edge_apr']:+.1f}%"
         html += (f"<tr><td><strong>{s['base_asset']}</strong></td>"
                  f"<td class='green'>{valor}</td>"

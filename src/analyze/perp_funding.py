@@ -72,10 +72,13 @@ class Perp:
 
     @property
     def base_asset(self) -> str:
-        key = self.symbol.upper()
+        raw = self.symbol
+        key = raw.upper()
         if key in BASE_ALIASES:
             return BASE_ALIASES[key]
-        if key.startswith("K") and len(key) > 1 and key[1:].isupper():
+        # Solo se quita la 'k' de prefijo cuando viene en minuscula (kPEPE).
+        # Con 'K' mayuscula (KORU, KIOXIA) el simbolo es completo y se respeta.
+        if raw.startswith("k") and raw[1:].isupper():
             return key[1:]
         return key
 
