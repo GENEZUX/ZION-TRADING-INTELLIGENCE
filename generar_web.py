@@ -48,6 +48,71 @@ def calcular_riesgo():
     finally:
         conn.close()
 
+def cargar_senales_funding():
+    """Lee las senales del ultimo snapshot de perpetuos. Vacio si no hay tablas."""
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        existe = conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='funding_signals'"
+        ).fetchone()[0]
+        if not existe:
+            return [], None
+        rows = conn.execute(
+            """SELECT kind, base_asset, venue_long, venue_short, edge_apr, score,
+                      rationale, risk_flags_json, captured_at_utc
+               FROM funding_signals
+               WHERE captured_at_utc = (SELECT MAX(captured_at_utc) FROM funding_signals)
+               ORDER BY score DESC"""
+        ).fetchall()
+        senales = [{
+            "kind": r[0], "base_asset": r[1], "venue_long": r[2], "venue_short": r[3],
+            "edge_apr": r[4], "score": r[5], "rationale": r[6],
+            "flags": json.loads(r[7] or "[]"), "captured": r[8],
+        } for r in rows]
+        captured = senales[0]["captured"] if senales else None
+        return senales, captured
+    except sqlite3.Error:
+        return [], None
+    finally:
+        conn.close()
+
+
+def _bloque_funding(titulo, senales, vacio="(sin senales)"):
+    if not senales:
+        return f'<h3 class="grp">{titulo}</h3><p class="none">{vacio}</p>'
+    html = f'<h3 class="grp">{titulo}</h3>'
+    html += ('<table><thead><tr><th>Activo</th><th>Edge / Intensidad</th>'
+             '<th>Score</th><th>Detalle</th></tr></thead><tbody>')
+    for s in senales:
+        flags = "".join(f'<span class="flag">{f}</span>' for f in s["flags"])
+        valor = f"{s['edge_apr']:+.2f}% TAE" if s["kind"] == "arbitrage" else f"{s['edge_apr']:+.1f}%"
+        html += (f"<tr><td><strong>{s['base_asset']}</strong></td>"
+                 f"<td class='green'>{valor}</td>"
+                 f"<td>{s['score']}</td>"
+                 f"<td>{s['rationale']}{flags}</td></tr>")
+    html += "</tbody></table>"
+    return html
+
+
+def _seccion_funding(senales, captured):
+    html = "<h2>Se&ntilde;ales de Funding en Perpetuos</h2>"
+    if not senales:
+        return html + ('<p class="none">Sin escaneos de funding registrados. '
+                       'Ejecuta <code>python run_funding_scan.py</code>.</p>')
+    html += f'<p class="sub">Snapshot: {captured}</p>'
+    arb = [s for s in senales if s["kind"] == "arbitrage"]
+    sq = [s for s in senales if s["kind"] == "squeeze"]
+    eu = [s for s in senales if s["kind"] == "euphoria"]
+    tr = [s for s in senales if s["kind"] == "trampa_rotacion"]
+    html += _bloque_funding("Arbitraje delta-neutral", arb,
+                            "(sin divergencias ejecutables)")
+    html += _bloque_funding("Squeeze de shorts", sq)
+    html += _bloque_funding("Euforia de longs", eu)
+    html += _bloque_funding("Trampas de rotaci&oacute;n &mdash; no entrar", tr,
+                            "(sin rotaci&oacute;n an&oacute;mala)")
+    return html
+
+
 def generar_html():
     metricas, correlaciones = calcular_riesgo()
     conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
@@ -55,6 +120,8 @@ def generar_html():
     runs = conn.execute("SELECT COUNT(*) FROM runs").fetchone()[0]
     cuarentena = conn.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0]
     conn.close()
+
+    senales_funding, captured_funding = cargar_senales_funding()
 
     fecha = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     
@@ -76,6 +143,10 @@ def generar_html():
         th {{ color: #8b949e; font-size: 13px; text-transform: uppercase; }}
         .red {{ color: #f85149; }}
         .green {{ color: #3fb950; }}
+        .sub {{ color: #8b949e; font-size: 13px; margin-top: -8px; }}
+        .grp {{ color: #e6b800; font-size: 15px; margin-top: 26px; margin-bottom: 6px; }}
+        .flag {{ display: inline-block; background: #21262d; color: #8b949e; border: 1px solid #30363d; border-radius: 4px; padding: 2px 7px; font-size: 11px; margin-left: 6px; }}
+        .none {{ color: #8b949e; font-style: italic; padding: 10px 0; }}
         .footer {{ text-align: center; color: #8b949e; font-size: 12px; margin-top: 40px; }}
     </style>
 </head>
@@ -109,7 +180,9 @@ def generar_html():
         color = "red" if abs(corr) > 0.7 else "green"
         html += f"<tr><td>{par}</td><td class='{color}'>{corr}</td></tr>"
 
-    html += """</tbody></table>
+    html += """</tbody></table>"""
+    html += _seccion_funding(senales_funding, captured_funding)
+    html += """
         <div class="footer">ZION Trading Intelligence - Generado por la Bestia</div>
     </div>
 </body>
