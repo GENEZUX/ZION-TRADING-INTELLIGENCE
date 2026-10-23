@@ -23,3 +23,6 @@ venv/
 # --- sistema ---
 .DS_Store
 Thumbs.db
+ZProMax_cartera.csv
+*.pyc
+__pycache__/
